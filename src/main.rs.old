@@ -1,0 +1,155 @@
+use mouse_rs::{types::keys::Keys, Mouse};
+use serde_derive::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use warp::{
+    reject::{Reject, Rejection},
+    reply::Reply,
+    Filter,
+};
+
+#[derive(Serialize, Deserialize, Debug)]
+enum MouseButton {
+    LEFT,
+    RIGHT,
+    MIDDLE,
+    WHEEL,
+    X,
+    X2,
+    UP,
+    DOWN,
+    VERTICAL,
+    HORIZONTAL,
+}
+
+impl From<MouseButton> for Keys {
+    fn from(button: MouseButton) -> Self {
+        match button {
+            MouseButton::LEFT => Keys::LEFT,
+            MouseButton::RIGHT => Keys::RIGHT,
+            MouseButton::MIDDLE => Keys::MIDDLE,
+            MouseButton::WHEEL => Keys::WHEEL,
+            MouseButton::X => Keys::X,
+            MouseButton::X2 => Keys::X2,
+            MouseButton::UP => Keys::UP,
+            MouseButton::DOWN => Keys::DOWN,
+            MouseButton::VERTICAL => Keys::VERTICAL,
+            MouseButton::HORIZONTAL => Keys::HORIZONTAL,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+enum MouseAction {
+    MouseDown(MouseButton),
+    MouseUp(MouseButton),
+    MouseMove(f32, f32),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MouseActionMessage {
+    action: MouseAction,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MouseActionsMessage {
+    actions: Vec<MouseAction>,
+}
+
+#[tokio::main]
+async fn main() {
+    pretty_env_logger::init();
+
+    let post_mouse_action = warp::post()
+        .and(warp::path("mouse-action"))
+        .and(warp::body::json())
+        .map(post_mouse_action_handler)
+        .map(handle_error);
+
+    let post_mouse_actions = warp::post()
+        .and(warp::path("mouse-actions"))
+        .and(warp::body::json())
+        .map(post_mouse_actions_handler)
+        .map(handle_error);
+
+    warp::serve(post_mouse_actions)
+        .run(([127, 0, 0, 1], 8080))
+        .await;
+}
+
+fn post_mouse_actions_handler(actions: MouseActionsMessage) -> Result<Value, Rejection> {
+    let mut results = Vec::new();
+    for action in actions.actions {
+        match post_mouse_action_handler(MouseActionMessage { action }) {
+            Ok(res) => results.push(res),
+            Err(rejection) => return Err(rejection),
+        }
+    }
+    Ok(json!({"messages": results}))
+}
+
+fn post_mouse_action_handler(action: MouseActionMessage) -> Result<Value, Rejection> {
+    let mouse = Mouse::new();
+    match action.action {
+        MouseAction::MouseDown(button) => {
+            let message = format!("Mouse down button: {:?}", &button);
+            println!("{}", message);
+            match mouse.press(&button.into()) {
+                Ok(_) => Ok(json!({"message": message})),
+                Err(_) => return Err(warp::reject::custom(MouseDownError)),
+            }
+        }
+        MouseAction::MouseUp(button) => {
+            let message = format!("Mouse up button: {:?}", &button);
+            println!("{}", message);
+            match mouse.release(&button.into()) {
+                Ok(_) => Ok(json!({"message": message})),
+                Err(_) => return Err(warp::reject::custom(MouseUpError)),
+            }
+        }
+        MouseAction::MouseMove(x, y) => {
+            let message = format!("Mouse move to ({}, {})", x, y);
+            println!("{}", message);
+
+            match mouse.move_to(x as i32, y as i32) {
+                Ok(_) => Ok(json!({"message": message})),
+                Err(_) => return Err(warp::reject::custom(MouseMoveError)),
+            }
+        }
+    }
+}
+
+fn handle_error(result: Result<Value, Rejection>) -> impl Reply {
+    match result {
+        Ok(value) => warp::reply::json(&value).into_response(),
+        Err(rejection) => {
+            if rejection.is_not_found() {
+                warp::reply::with_status("Not found", warp::http::StatusCode::NOT_FOUND)
+                    .into_response()
+            } else if let Some(MouseUpError) = rejection.find() {
+                warp::reply::with_status(
+                    "Mouse up error",
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                )
+                .into_response()
+            } else {
+                warp::reply::with_status(
+                    "Internal server error",
+                    warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                )
+                .into_response()
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct MouseMoveError;
+impl Reject for MouseMoveError {}
+
+#[derive(Debug)]
+struct MouseDownError;
+impl Reject for MouseDownError {}
+
+#[derive(Debug)]
+struct MouseUpError;
+impl Reject for MouseUpError {}
